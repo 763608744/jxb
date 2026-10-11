@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         手机腾讯选集
-// @version      2
-// @description  无聊折腾好玩的，能不能用不清楚
+// @version      3
+// @description  修复集数提取与上下中排序，适配多种标题格式
 // @author       屏幕前的你
 // @noframes
 // @match        *://m.v.qq.com/*
@@ -86,8 +86,8 @@
     } catch (e) {}
 
     const RE_PURE_NUM = /^\d+$/;
-    const RE_EPISODE = /^第\d+(集|期)/;
-    const RE_EPISODE_NUM = /第(\d+)(集|期)/;
+    const RE_EPISODE = /^第\d+([集话話期])/;
+    const RE_EPISODE_NUM = /第\s*(\d+)\s*([集话話期])/;
     const RE_SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
     const RE_PLAY_PAGE = /^https?:\/\/m\.v\.qq\.com\/x\/m\/play/;
     const RE_STRIP_ATTR = /[^\w\u4e00-\u9fa5]+/g;
@@ -96,7 +96,6 @@
     const RE_TAG_1X = /1X\s*?=\s*?([^;]+)/;
     const RE_YEAR = /^\s*?[12]\d{3}\s*?$/;
     const RE_DATE_DASH = /-/g;
-
 
     const EXTRA_KEYWORDS = [
         '预告', '特辑', '剧场版', '客栈', '花絮', '彩蛋', '前瞻', '回顾', 'PV', 'MV', '定档', '旅行', '陪看', '纯享', '名场面', '直播回放', '幕后故事', '解锁一系列',
@@ -125,22 +124,46 @@
         return typeof v === 'string' && RE_SAFE_ID.test(v);
     }
 
-    function partWeight(title) {
-        if (title.indexOf('加更上') !== -1) return 4;
-        if (title.indexOf('加更下') !== -1) return 5;
-        if (title.indexOf('（上）') !== -1) return 1;
-        if (title.indexOf('（中）') !== -1) return 2;
-        if (title.indexOf('（下）') !== -1) return 3;
-        if (title.indexOf('上') !== -1) return 1;
-        if (title.indexOf('中') !== -1) return 2;
-        if (title.indexOf('下') !== -1) return 3;
+    function extractEpisodeNumber(title) {
+        if (typeof title !== 'string') return 0;
+        const t = title.trim();
+        if (!t) return 0;
+
+        if (RE_PURE_NUM.test(t)) return parseInt(t, 10);
+
+        let m = t.match(RE_EPISODE_NUM);
+        if (m) return parseInt(m[1], 10);
+
+        m = t.match(/^(\d+)\s*(?:[上下中][：:]?|[：:]|$)/);
+        if (m) return parseInt(m[1], 10);
+
+        m = t.match(/^(\d+)\s*[（(][上下中][）)]/);
+        if (m) return parseInt(m[1], 10);
+
         return 0;
     }
 
-    function extractEpisodeNumber(title) {
-        if (RE_PURE_NUM.test(title)) return parseInt(title, 10);
-        const m = title.match(RE_EPISODE_NUM);
-        return m ? parseInt(m[1], 10) : 0;
+    function partWeight(title) {
+    if (typeof title !== 'string') return 0;
+    const t = title.trim();
+
+    if (/加更上$/.test(t)) return 40;
+    if (/加更中$/.test(t)) return 45;
+    if (/加更下$/.test(t)) return 50;
+
+    if (/[（(]上[）)]$/.test(t)) return 1;
+    if (/[（(]中[）)]$/.test(t)) return 2;
+    if (/[（(]下[）)]$/.test(t)) return 3;
+
+    if (/上$/.test(t)) return 1;
+    if (/中$/.test(t)) return 2;
+    if (/下$/.test(t)) return 3;
+
+    if (/上[：:]$/.test(t)) return 1;
+    if (/中[：:]$/.test(t)) return 2;
+    if (/下[：:]$/.test(t)) return 3;
+
+    return 0;
     }
 
     function extractTagImage(imgtagJson) {
@@ -173,6 +196,8 @@
     function isNumericTitle(t) {
         if (RE_PURE_NUM.test(t)) return true;
         if (RE_EPISODE.test(t)) return true;
+        if (/^\d+\s*[上下中]/.test(t)) return true;
+        if (/^\d+\s*[：:]/.test(t)) return true;
         return false;
     }
 
@@ -494,40 +519,39 @@
                 for (let i = 0; i < episodes.length; i++) {
                     const ep = episodes[i];
                     const pw = partWeight(ep.title);
-                    const key = ep.num !== 0 ? ('n_' + ep.num + '_' + pw) : ('v_' + ep.vid);
+                    const key = ep.num !== 0
+                        ? ('n_' + ep.num + '_' + pw)
+                        : ('v_' + ep.vid);
+
                     const prev = uniqueMap.get(key);
-                    if (!prev) uniqueMap.set(key, ep);
-                    else if (prev.isTrailer && !ep.isTrailer) uniqueMap.set(key, ep);
+                    if (!prev) {
+                        uniqueMap.set(key, ep);
+                    } else {
+                        if (prev.isTrailer && !ep.isTrailer) uniqueMap.set(key, ep);
+                    }
                 }
 
                 let finalEpisodes = [];
                 uniqueMap.forEach(v => finalEpisodes.push(v));
 
-                let autoIndex = 0;
                 const autoAssigned = [];
                 for (let i = 0; i < finalEpisodes.length; i++) {
                     const ep = finalEpisodes[i];
                     if (ep.num === 0) {
-                        autoIndex++;
-                        ep.num = autoIndex;
                         ep._autoAssigned = true;
                         autoAssigned.push(ep);
                     }
                 }
 
-                if (autoAssigned.length > 0) {
-                    let maxNum = 0;
-                    for (let i = 0; i < finalEpisodes.length; i++) {
-                        const ep = finalEpisodes[i];
-                        if (!ep._autoAssigned && ep.num > maxNum) maxNum = ep.num;
-                    }
-                    if (maxNum > 0) {
-                        let nextNum = maxNum + 1;
-                        for (let i = 0; i < autoAssigned.length; i++) {
-                            const ep = autoAssigned[i];
-                            if (ep.num <= maxNum) ep.num = nextNum++;
-                        }
-                    }
+                let maxNum = 0;
+                for (let i = 0; i < finalEpisodes.length; i++) {
+                    const ep = finalEpisodes[i];
+                    if (!ep._autoAssigned && ep.num > maxNum) maxNum = ep.num;
+                }
+
+                let nextNum = maxNum + 1;
+                for (let i = 0; i < autoAssigned.length; i++) {
+                    autoAssigned[i].num = nextNum++;
                 }
 
                 let allHaveDate = finalEpisodes.length > 0;
@@ -573,7 +597,11 @@
                     }
                 }
 
-                episodeCache.set(cid, { episodes: finalEpisodes, year: activeYear, episodeAll: episodeAll });
+                episodeCache.set(cid, {
+                    episodes: finalEpisodes,
+                    year: activeYear,
+                    episodeAll: episodeAll
+                });
                 callback(finalEpisodes, activeYear, episodeAll);
             }
         });
